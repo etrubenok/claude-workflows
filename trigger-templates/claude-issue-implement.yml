@@ -1,0 +1,23 @@
+name: Claude Issue Implement
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: issue-implement-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  run:
+    uses: etrubenok/claude-workflows/.github/workflows/claude-issue-implement.yml@v1
+    with:
+      event_name: ${{ github.event_name }}
+      # runner: '["self-hosted", "linux", "claude-agent"]'  # uncomment to override default
+    secrets: inherit

@@ -1,0 +1,91 @@
+name: Claude Code
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: "Original github.event_name from caller"
+        required: true
+        type: string
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  claude:
+    if: |
+      (inputs.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && !contains(github.event.comment.body, '@fix') && !contains(github.event.comment.body, '@research') && !contains(github.event.comment.body, '@implement')) ||
+      (inputs.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && !contains(github.event.comment.body, '@fix')) ||
+      (inputs.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (inputs.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set working label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Determine if this is a PR or issue context
+          if [ "${{ inputs.event_name }}" = "pull_request_review_comment" ] || [ "${{ inputs.event_name }}" = "pull_request_review" ]; then
+            TYPE="pr"
+            NUMBER="${{ github.event.pull_request.number }}"
+          elif [ -n "${{ github.event.issue.pull_request }}" ]; then
+            TYPE="pr"
+            NUMBER="${{ github.event.issue.number }}"
+          else
+            TYPE="issue"
+            NUMBER="${{ github.event.issue.number }}"
+          fi
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${NUMBER}/labels" --method POST -f "labels[]=🤖 claude-working"
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+
+      - name: Set outcome label
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            LABEL="✅ claude-done"
+          elif [ "${{ job.status }}" = "cancelled" ]; then
+            LABEL="⚠️ claude-cancelled"
+          else
+            LABEL="❌ claude-failed"
+          fi
+          # Determine target type
+          if [ "${{ inputs.event_name }}" = "pull_request_review_comment" ] || [ "${{ inputs.event_name }}" = "pull_request_review" ]; then
+            TYPE="pr"
+            NUMBER="${{ github.event.pull_request.number }}"
+          elif [ -n "${{ github.event.issue.pull_request }}" ]; then
+            TYPE="pr"
+            NUMBER="${{ github.event.issue.number }}"
+          else
+            TYPE="issue"
+            NUMBER="${{ github.event.issue.number }}"
+          fi
+          ENCODED=$(printf '%s' "🤖 claude-working" | jq -sRr @uri)
+          gh api "repos/${{ github.repository }}/issues/${NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          gh api "repos/${{ github.repository }}/issues/${NUMBER}/labels" --method POST -f "labels[]=$LABEL"

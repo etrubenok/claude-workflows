@@ -1,0 +1,160 @@
+name: Claude Review Iteration
+
+on:
+  workflow_call:
+    inputs:
+      iteration:
+        description: "Review iteration number (1, 2, or 3)"
+        required: true
+        type: string
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: string
+      is_final:
+        description: "Whether this is the final review (no @fix)"
+        required: true
+        type: boolean
+      has_prior_reviews:
+        description: "Whether prior review iterations exist"
+        required: true
+        type: boolean
+      repo:
+        description: "Repository (owner/name)"
+        required: true
+        type: string
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "claude-agent"]'
+    outputs:
+      needs_fix:
+        description: "Whether the review requests fixes"
+        value: ${{ jobs.review.outputs.needs_fix }}
+
+jobs:
+  review:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    outputs:
+      needs_fix: ${{ steps.check-fix.outputs.needs_fix }}
+    steps:
+      - name: Get PR branch
+        id: pr-branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH=$(gh api "repos/${{ inputs.repo }}/pulls/${{ inputs.pr_number }}" --jq '.head.ref')
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-branch.outputs.branch }}
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh api:*)"'
+          prompt: |
+            REPO: ${{ inputs.repo }}
+            PR NUMBER: ${{ inputs.pr_number }}
+            REVIEW ITERATION: ${{ inputs.iteration }} of 3${{ inputs.is_final && ' — FINAL' || '' }} (automated dev loop)
+
+            ${{ inputs.is_final && 'This is the FINAL automated review. Do NOT include `@fix` in your output regardless of verdict.
+            If issues remain, note them for manual attention.
+
+            ' || '' }}Review this PR following the structured process below. Use the repository's CLAUDE.md and any linked quality/metrics docs for guidance.
+
+            ## SCOPE RULE — MANDATORY
+            You may ONLY flag issues in lines ADDED or MODIFIED in this PR diff (lines prefixed with `+`).
+            Pre-existing issues in unchanged code may be mentioned in a separate "Pre-existing observations"
+            section — clearly labeled as informational. They MUST NOT appear in Findings, MUST NOT receive
+            severity, and MUST NOT affect scoring or verdict.
+
+            ## TEST vs PRODUCTION DISTINCTION
+            Production-code rules do NOT apply to test code. Refer to CLAUDE.md and the project's code
+            quality docs for language-specific conventions on what constitutes test code and which rules
+            are relaxed in test contexts. Blocking I/O or other production-only violations in test code
+            are LOW at most.
+
+            ## REVIEW DOMAINS
+
+            ### 1. Security
+            - CRITICAL: Hardcoded credentials/secrets, command injection, SQL injection, path traversal
+            - HIGH: New deps with known CVEs, deserialization of untrusted data, missing input validation, info disclosure
+            - MEDIUM: Excessive permissions, missing rate limiting, logging sensitive data
+            - LOW: Minor security hygiene
+
+            ### 2. Performance
+            - CRITICAL: Blocking I/O in async context (production code only), unbounded collections, missing timeouts on external calls
+            - HIGH: Unnecessary copies/clones, N+1 query patterns, large allocations in hot paths
+            - MEDIUM: Suboptimal data structures, missing batch operations, excessive logging in hot paths
+
+            ### 3. Test Coverage
+            - CRITICAL: Tests that are broken/wrong (compile but assert incorrectly, test wrong function, panic)
+            - HIGH: Safety-critical production path (data loss, security, financial) with ZERO test coverage
+            - MEDIUM: Business logic without tests, weak assertions, missing error-path tests
+            - LOW: Missing edge cases, naming violations, DRY in tests, untested simple helpers
+            NOTE: Missing test coverage is NOT automatically CRITICAL. It is CRITICAL only if the test itself is broken.
+
+            ## SCORING
+            Score each category 1-10 per the project's code quality metrics.
+            See CLAUDE.md and any linked quality docs for the scoring rubric, categories, and language-specific conventions.
+
+            ## VERDICT RULES
+            Determine verdict using these threshold rules (ALL conditions must pass for APPROVE).
+            If the project's quality docs define custom verdict thresholds, use those. Otherwise use these defaults:
+            - REQUEST CHANGES: 2+ CRITICAL findings, OR score <40, OR >5 HIGH findings
+            - APPROVE (ALL must be true): 0 CRITICAL, 0 HIGH, 0 MEDIUM, AND score ≥50
+            - NEEDS DISCUSSION: Everything else, including any of: 1+ MEDIUM, 1-2 HIGH, score 40-49, exactly 1 CRITICAL
+
+            MANDATORY PRE-VERDICT CHECKS:
+            1. If score < 50 → verdict CANNOT be APPROVE
+            2. If any MEDIUM or higher finding exists → verdict CANNOT be APPROVE
+            3. Re-verify each CRITICAL meets its explicit severity criteria before finalizing
+
+            ## E2E TEST RESULTS
+            Check PR comments for e2e test results (markers <!-- e2e-test-after-* -->).
+            Factor these results into your review. If e2e tests failed or revealed data issues,
+            flag them as findings with appropriate severity. If e2e tests passed, note it as a strength.
+
+            ## CROSS-REVIEW CONSISTENCY
+            ${{ inputs.has_prior_reviews && 'Prior review iterations exist on this PR. Do NOT re-flag issues that were already addressed.
+            If assigning different severity to the same finding, justify why. If the PR improved,
+            the score MUST NOT decrease unless new problems were introduced.' || 'If prior reviews exist on this PR, do NOT re-flag addressed issues. If assigning different
+            severity to the same finding, justify why. If the PR improved, the score MUST NOT decrease
+            unless new problems were introduced.' }}
+
+            ## OUTPUT FORMAT
+            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+
+            CRITICAL: Your comment MUST begin with this exact HTML marker on the very first line:
+            <!-- claude-review-iteration-${{ inputs.iteration }} -->
+
+            Include: Summary, Findings by Severity, Missing Tests Table, Scorecard, Strengths,
+            Open PR Comments Status, and Verdict with justification.
+
+            ${{ inputs.is_final && 'IMPORTANT: This is the FINAL review. Do NOT include `@fix` in your comment.
+            If issues remain that need human attention, clearly state:
+            "⚠️ Remaining issues require manual review before merging."' || 'IMPORTANT: If verdict is REQUEST CHANGES or NEEDS DISCUSSION, you MUST end the comment
+            with `@fix` on its own line. If verdict is APPROVE, do NOT include `@fix`.' }}
+
+      - name: Check if fix needed
+        id: check-fix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMENT_BODY=$(gh api "repos/${{ inputs.repo }}/issues/${{ inputs.pr_number }}/comments" \
+            --jq '[.[] | select(.body | contains("<!-- claude-review-iteration-${{ inputs.iteration }} -->"))] | last | .body // ""')
+          if echo "$COMMENT_BODY" | tail -5 | grep -q '@fix'; then
+            echo "needs_fix=true" >> "$GITHUB_OUTPUT"
+            echo "Review ${{ inputs.iteration }} requests fixes"
+          else
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            echo "Review ${{ inputs.iteration }} approved or no fix needed"
+          fi

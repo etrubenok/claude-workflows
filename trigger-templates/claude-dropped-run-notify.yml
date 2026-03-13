@@ -1,0 +1,18 @@
+name: Notify Dropped Run
+
+on:
+  workflow_run:
+    workflows:
+      - "Claude Code PR Feedback"
+      - "Claude Dev Loop"
+      - "Claude Issue Implement"
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  run:
+    uses: etrubenok/claude-workflows/.github/workflows/claude-dropped-run-notify.yml@v1
+    secrets: inherit

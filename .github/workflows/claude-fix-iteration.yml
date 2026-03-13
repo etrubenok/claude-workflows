@@ -1,0 +1,96 @@
+name: Claude Fix Iteration
+
+on:
+  workflow_call:
+    inputs:
+      iteration:
+        description: "Fix iteration number (1 or 2)"
+        required: true
+        type: string
+      pr_number:
+        description: "PR number to fix"
+        required: true
+        type: string
+      repo:
+        description: "Repository (owner/name)"
+        required: true
+        type: string
+      include_failure_context:
+        description: "Add 'and what failed previously' to e2e test step"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "claude-agent"]'
+
+jobs:
+  fix:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 60
+    steps:
+      - name: Get PR branch
+        id: pr-branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH=$(gh api "repos/${{ inputs.repo }}/pulls/${{ inputs.pr_number }}" --jq '.head.ref')
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-branch.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+
+      - name: Run Claude Code Fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          show_full_output: true
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 80 --dangerously-skip-permissions"
+          prompt: |
+            You are fixing code review feedback on PR #${{ inputs.pr_number }}.
+            Read CLAUDE.md to see how to access GitHub and environments.
+
+            STEP 1: Read the review comment.
+            Run: gh api repos/${{ inputs.repo }}/issues/${{ inputs.pr_number }}/comments
+            Find the latest comment containing the marker `<!-- claude-review-iteration-${{ inputs.iteration }} -->`.
+            That is the review you must address.
+
+            STEP 2: Fix every issue raised in the review.
+            Address all findings — CRITICAL, HIGH, and MEDIUM severity.
+
+            STEP 3: Run quality checks.
+            Run the project's quality checks (formatting, linting, tests) as described in CLAUDE.md.
+            Fix any failures that arise.
+
+            STEP 4: Commit and push.
+            Commit with a message like "Address review iteration ${{ inputs.iteration }} feedback" and push to the PR branch.
+
+            ## E2E SERVICE TESTING (after pushing fixes)
+
+            STEP 5: Read the design spec for testing instructions.
+            Find the linked issue from the PR body (look for #NNN reference), then read that issue.
+            The design spec describes which services to test and what data to verify.
+            Also check existing e2e test comments on the PR (markers <!-- e2e-test-after-* -->)
+            to understand what was tested before${{ inputs.include_failure_context && ' and what failed previously' || '' }}.
+
+            STEP 6: Build and deploy the service(s) under test.
+            Set environment variables as specified in CLAUDE.md before running any deployment commands.
+            Follow the service build/deploy/test procedures described in CLAUDE.md.
+            For each affected service: build, start, watch logs, verify data, and test edge cases
+            per the design spec and CLAUDE.md instructions.
+
+            STEP 7: Post test results as a PR comment.
+            Use `gh pr comment` to post results with this marker on the first line:
+            <!-- e2e-test-after-fix-${{ inputs.iteration }} -->
+            Include: services tested, commands run, log excerpts (key lines only), data verification
+            results, and overall PASS/FAIL status.
+
+            STEP 8: If tests reveal issues, fix the code, rebuild, retest, commit and push again.
+            Update the e2e test comment with the new results.

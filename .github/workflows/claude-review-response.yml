@@ -1,0 +1,200 @@
+name: Claude Code PR Feedback
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: "Original github.event_name from caller"
+        required: true
+        type: string
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "claude-agent"]'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  respond:
+    if: |
+      contains(github.event.comment.body, '@fix') &&
+      github.actor != 'github-actions[bot]' &&
+      (inputs.event_name == 'pull_request_review_comment' || github.event.issue.pull_request)
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    outputs:
+      code_changed: ${{ steps.check-changes.outputs.code_changed }}
+      pr_number: ${{ steps.resolve-pr.outputs.pr_number }}
+
+    steps:
+      - name: Resolve PR number
+        id: resolve-pr
+        run: |
+          if [ "${{ inputs.event_name }}" = "pull_request_review_comment" ]; then
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set working label on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.resolve-pr.outputs.pr_number }}"
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --method POST -f "labels[]=🤖 claude-working"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+
+      - name: Record SHA before
+        id: sha-before
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH=$(gh api "repos/${{ github.repository }}/pulls/${{ steps.resolve-pr.outputs.pr_number }}" --jq '.head.ref')
+          SHA=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "PR branch: ${BRANCH}, SHA before: ${SHA}"
+
+      - name: Respond to feedback
+        uses: anthropics/claude-code-action@v1
+        with:
+          trigger_phrase: "@fix"
+          mode: "agent"
+          show_full_output: true
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 80 --dangerously-skip-permissions"
+
+      - name: Check if code changed
+        id: check-changes
+        run: |
+          SHA_AFTER=$(git ls-remote origin "refs/heads/${{ steps.sha-before.outputs.branch }}" | cut -f1)
+          echo "SHA before: ${{ steps.sha-before.outputs.sha }}"
+          echo "SHA after:  ${SHA_AFTER}"
+          if [ "${{ steps.sha-before.outputs.sha }}" != "${SHA_AFTER}" ]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Code was changed — will trigger review-fix loop"
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            echo "No code changes — skipping review-fix loop"
+          fi
+
+  # ─── Review-Fix Loop (only if code was changed) ───────────────────────
+  review-1:
+    needs: [respond]
+    if: always() && needs.respond.result == 'success' && needs.respond.outputs.code_changed == 'true'
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "1"
+      pr_number: ${{ needs.respond.outputs.pr_number }}
+      is_final: false
+      has_prior_reviews: false
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  fix-1:
+    needs: [respond, review-1]
+    if: always() && needs.review-1.result == 'success' && needs.review-1.outputs.needs_fix == 'true'
+    uses: ./.github/workflows/claude-fix-iteration.yml
+    with:
+      iteration: "1"
+      pr_number: ${{ needs.respond.outputs.pr_number }}
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  review-2:
+    needs: [respond, fix-1]
+    if: always() && needs.fix-1.result == 'success'
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "2"
+      pr_number: ${{ needs.respond.outputs.pr_number }}
+      is_final: false
+      has_prior_reviews: true
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  fix-2:
+    needs: [respond, review-2]
+    if: always() && needs.review-2.result == 'success' && needs.review-2.outputs.needs_fix == 'true'
+    uses: ./.github/workflows/claude-fix-iteration.yml
+    with:
+      iteration: "2"
+      pr_number: ${{ needs.respond.outputs.pr_number }}
+      repo: ${{ github.repository }}
+      include_failure_context: true
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  review-3:
+    needs: [respond, fix-2]
+    if: always() && needs.fix-2.result == 'success'
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "3"
+      pr_number: ${{ needs.respond.outputs.pr_number }}
+      is_final: true
+      has_prior_reviews: true
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Final: Set outcome labels ──────────────────────────────────────────
+  final-status:
+    needs: [respond, review-1, fix-1, review-2, fix-2, review-3]
+    if: always() && needs.respond.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set outcome labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CANCELLED="false"
+          FAILED="false"
+          for result in \
+            "${{ needs.respond.result }}" \
+            "${{ needs.review-1.result }}" \
+            "${{ needs.fix-1.result }}" \
+            "${{ needs.review-2.result }}" \
+            "${{ needs.fix-2.result }}" \
+            "${{ needs.review-3.result }}"; do
+            case "$result" in
+              cancelled) CANCELLED="true" ;;
+              failure) FAILED="true" ;;
+            esac
+          done
+
+          if [ "$CANCELLED" = "true" ]; then
+            LABEL="⚠️ claude-cancelled"
+          elif [ "$FAILED" = "true" ]; then
+            LABEL="❌ claude-failed"
+          else
+            LABEL="✅ claude-done"
+          fi
+
+          PR_NUMBER="${{ needs.respond.outputs.pr_number }}"
+          if [ -n "$PR_NUMBER" ]; then
+            for l in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+              ENCODED=$(printf '%s' "$l" | jq -sRr @uri)
+              gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+            done
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --method POST -f "labels[]=$LABEL"
+          fi

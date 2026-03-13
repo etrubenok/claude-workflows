@@ -1,0 +1,60 @@
+name: Notify Dropped Run
+
+on:
+  workflow_call:
+
+jobs:
+  notify:
+    if: github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Find PR and notify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          WORKFLOW_NAME="${{ github.event.workflow_run.name }}"
+          RUN_URL="${{ github.event.workflow_run.html_url }}"
+
+          # Extract PR number from the concurrency group or run metadata
+          # The run's pull_requests array may contain the PR
+          PR_NUMBER=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" \
+            --jq '.pull_requests[0].number // empty' 2>/dev/null || true)
+
+          # Fallback: try to extract from the run's triggering event
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Could not determine PR number from run metadata — skipping notification"
+            exit 0
+          fi
+
+          BODY="<!-- claude-dropped-run-notify -->
+          **Warning:** A queued **${WORKFLOW_NAME}** run was cancelled before it could complete.
+
+          This typically happens when a new run was queued for the same PR while this one was still pending (concurrency group serialization).
+
+          - Cancelled run: ${RUN_URL}
+
+          You may need to re-trigger the workflow if the latest changes were not processed."
+
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "$BODY"
+
+          # Set cancelled label on PR
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --method POST -f "labels[]=⚠️ claude-cancelled"
+
+          # Try to find linked issue and set label there too
+          PR_BODY=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.body // ""')
+          ISSUE_NUMBER=$(echo "$PR_BODY" | grep -oP '(?<=#)\d+' | head -1)
+          if [ -n "$ISSUE_NUMBER" ]; then
+            for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+              ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+              gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+            done
+            gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/labels" --method POST -f "labels[]=⚠️ claude-cancelled"
+          fi
+
+          echo "Posted notification on PR #${PR_NUMBER}"

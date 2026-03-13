@@ -1,0 +1,109 @@
+name: Claude Code Research Agent
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: "Original github.event_name from caller"
+        required: true
+        type: string
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "claude-agent"]'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  research:
+    # Trigger on "research" label OR @research in a comment
+    if: |
+      (inputs.event_name == 'issues' && github.event.label.name == 'research') ||
+      (inputs.event_name == 'issue_comment' && contains(github.event.comment.body, '@research') && github.actor != 'github-actions[bot]')
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set working label on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels" --method POST -f "labels[]=🤖 claude-working"
+
+      - name: Fetch issue content
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_JSON=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}")
+          COMMENTS_JSON=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" --jq '[.[].body]')
+          echo "$ISSUE_JSON" | jq --argjson comments "$COMMENTS_JSON" '{title: .title, body: .body, comments: $comments}' > /tmp/issue-content.json
+
+      - name: Run Claude Research
+        uses: anthropics/claude-code-action@v1
+        with:
+          show_full_output: true
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 80 --dangerously-skip-permissions"
+          prompt: |
+            You are a research agent. Your job is to investigate a question or topic
+            and provide a thorough, well-structured answer.
+
+            Read the issue and any comments from /tmp/issue-content.json carefully to understand what is being asked.
+
+            You must use `gh` CLI to manage the issue and post the comments.
+
+            ## Execution Environment
+
+            Read CLAUDE.md for execution environment details: available tools, server addresses,
+            data paths, and access restrictions. You are running directly on the dev server —
+            access the local filesystem directly, do NOT SSH to localhost.
+
+            Your workflow:
+            1. Read and understand the research question from the issue
+            2. Plan your investigation approach
+            3. Write and run any scripts needed to gather data
+            4. Query databases if relevant
+            5. Browse the web for external information if needed
+            6. Synthesize your findings
+
+            IMPORTANT RULES:
+            - Do NOT create branches or PRs — this is research, not implementation
+            - Do NOT modify any existing files in the repository
+            - You CAN create temporary scripts in /tmp for analysis
+            - Post your complete findings as a comment on the issue
+            - Structure your response with clear sections and conclusions
+            - Include raw data, queries used, and script outputs where relevant
+            - If you're uncertain about something, say so explicitly
+            - Clean up any temporary files when done
+
+      - name: Set outcome label
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            LABEL="✅ claude-done"
+          elif [ "${{ job.status }}" = "cancelled" ]; then
+            LABEL="⚠️ claude-cancelled"
+          else
+            LABEL="❌ claude-failed"
+          fi
+          ENCODED=$(printf '%s' "🤖 claude-working" | jq -sRr @uri)
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels" --method POST -f "labels[]=$LABEL"

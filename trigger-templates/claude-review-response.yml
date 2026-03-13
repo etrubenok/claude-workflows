@@ -1,0 +1,25 @@
+name: Claude Code PR Feedback
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+concurrency:
+  group: review-fix-loop-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  run:
+    uses: etrubenok/claude-workflows/.github/workflows/claude-review-response.yml@v1
+    with:
+      event_name: ${{ github.event_name }}
+      # runner: '["self-hosted", "linux", "claude-agent"]'  # uncomment to override default
+    secrets: inherit

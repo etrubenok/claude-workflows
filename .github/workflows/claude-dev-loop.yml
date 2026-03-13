@@ -1,0 +1,305 @@
+name: Claude Dev Loop
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: "Original github.event_name from caller"
+        required: true
+        type: string
+      runner:
+        description: "Runner label (JSON array string)"
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "claude-agent"]'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  # ─── Stage 1: Implement (issue trigger only) ───────────────────────────
+  implement:
+    if: inputs.event_name == 'issues' && github.event.label.name == 'ready-for-implementation'
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+
+      - name: Set working label on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels" --method POST -f "labels[]=🤖 claude-working"
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          show_full_output: true
+          branch_prefix: "feature/"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 80 --dangerously-skip-permissions"
+          prompt: |
+            You are implementing a feature from a GitHub issue. Read CLAUDE.md to see how to access GitHub and environments.
+
+            Read issue #${{ github.event.issue.number }} carefully.
+            The issue contains a design spec — follow it precisely.
+
+            Follow the Implementation Workflow in CLAUDE.md.
+
+            IMPORTANT: Do NOT create a new branch — you are already on the correct feature branch.
+            Skip the "Create a feature branch" step in CLAUDE.md's Implementation Workflow.
+            Work on the current branch, commit, push, and create a PR from it.
+
+            CRITICAL: After implementing and testing, you MUST create a PR:
+            1. Stage and commit all changes to the current branch
+            2. Push the branch: git push -u origin HEAD
+            3. Create the PR: gh pr create --title "feat: <short description>" --body "Closes #${{ github.event.issue.number }}\n\n<summary of changes>"
+            Do NOT skip PR creation — downstream workflow stages depend on it.
+
+            ## E2E SERVICE TESTING (after creating the PR)
+
+            After implementation is complete, the PR is created, and quality checks pass, you MUST run
+            end-to-end service tests if CLAUDE.md describes e2e or integration testing procedures.
+
+            STEP A: Re-read the design spec in issue #${{ github.event.issue.number }}.
+            Look for explicit testing instructions — which services to run, what data to verify,
+            what queries to execute. The spec is authoritative for what to test.
+
+            STEP B: Infer additional checks from context.
+            Based on the code changes, identify which services are affected and what downstream
+            data flows should be validated.
+
+            STEP C: Build and deploy the service(s) under test.
+            Set environment variables as specified in CLAUDE.md before running any deployment commands.
+            Follow the service build/deploy/test procedures described in CLAUDE.md.
+
+            STEP D: Post test results as a PR comment.
+            Use `gh pr comment` to post results with this marker on the first line:
+            <!-- e2e-test-after-implement -->
+            Include: services tested, commands run, log excerpts (key lines only), data verification
+            results, and overall PASS/FAIL status.
+
+            STEP E: If tests reveal issues, fix the code, rebuild, retest, and update the PR.
+            Commit fixes, push, and update the e2e test comment with the new results.
+
+  # ─── Stage 2: Resolve PR number ────────────────────────────────────────
+  resolve-pr:
+    needs: [implement]
+    if: >-
+      always() &&
+      (needs.implement.result == 'success' ||
+       (inputs.event_name == 'pull_request' && github.event.label.name == 'review-fix') ||
+       inputs.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pr_number: ${{ steps.find-pr.outputs.pr_number }}
+      issue_number: ${{ steps.find-pr.outputs.issue_number }}
+    steps:
+      - name: Find PR number
+        id: find-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ inputs.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ github.event.inputs.pr_number }}"
+            # Extract linked issue number from PR body
+            PR_BODY=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.body // ""')
+            ISSUE_NUMBER=$(echo "$PR_BODY" | grep -oP '(?<=#)\d+' | head -1)
+            if [ -z "$ISSUE_NUMBER" ]; then
+              ISSUE_NUMBER=$(echo "$PR_BODY" | grep -oP '(?<=issue-)\d+' | head -1)
+            fi
+          elif [ "${{ inputs.event_name }}" = "pull_request" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            # Extract linked issue number from PR body (looks for #NNN or issue-NNN)
+            PR_BODY=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.body // ""')
+            ISSUE_NUMBER=$(echo "$PR_BODY" | grep -oP '(?<=#)\d+' | head -1)
+            if [ -z "$ISSUE_NUMBER" ]; then
+              ISSUE_NUMBER=$(echo "$PR_BODY" | grep -oP '(?<=issue-)\d+' | head -1)
+            fi
+          else
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+            echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+            # Search by branch name pattern feature/issue-{N}-*
+            PR_JSON=$(gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" --jq '[.[] | {number: .number, headRefName: .head.ref}]')
+            PR_NUMBER=$(echo "$PR_JSON" | jq -r \
+              --arg prefix "feature/issue-${ISSUE_NUMBER}-" \
+              '[.[] | select(.headRefName | startswith($prefix))] | .[0].number // empty')
+            # Fallback: exact branch match feature/issue-{N}
+            if [ -z "$PR_NUMBER" ]; then
+              PR_NUMBER=$(echo "$PR_JSON" | jq -r \
+                --arg exact "feature/issue-${ISSUE_NUMBER}" \
+                '[.[] | select(.headRefName == $exact)] | .[0].number // empty')
+            fi
+            # Fallback: search claude/ prefix branches (claude-code-action default)
+            if [ -z "$PR_NUMBER" ]; then
+              PR_NUMBER=$(echo "$PR_JSON" | jq -r \
+                --arg prefix "claude/issue-${ISSUE_NUMBER}-" \
+                '[.[] | select(.headRefName | startswith($prefix))] | .[0].number // empty')
+            fi
+            # Fallback: search PR body for issue reference
+            if [ -z "$PR_NUMBER" ]; then
+              PR_NUMBER=$(gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" --jq '[.[] | {number: .number, body: .body}]' \
+                | jq -r --arg pat "#${ISSUE_NUMBER}\\b" \
+                '[.[] | select(.body | test($pat))] | .[0].number // empty')
+            fi
+            if [ -z "$PR_NUMBER" ]; then
+              echo "::error::Could not find PR for issue #${ISSUE_NUMBER}"
+              exit 1
+            fi
+          fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          # For PR trigger, issue_number was set above; for issue trigger, set earlier
+          if [ -n "${ISSUE_NUMBER:-}" ]; then
+            echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved PR: #${PR_NUMBER}, Issue: #${ISSUE_NUMBER:-unknown}"
+
+      - name: Set working label on PR
+        if: steps.find-pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.find-pr.outputs.pr_number }}"
+          for label in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+            ENCODED=$(printf '%s' "$label" | jq -sRr @uri)
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+          done
+          gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --method POST -f "labels[]=🤖 claude-working"
+
+  # ─── Stage 3: Review iteration 1 ───────────────────────────────────────
+  review-1:
+    needs: [resolve-pr]
+    if: always() && needs.resolve-pr.result == 'success' && needs.resolve-pr.outputs.pr_number != ''
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "1"
+      pr_number: ${{ needs.resolve-pr.outputs.pr_number }}
+      is_final: false
+      has_prior_reviews: false
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Stage 4: Fix iteration 1 ──────────────────────────────────────────
+  fix-1:
+    needs: [resolve-pr, review-1]
+    if: always() && needs.review-1.result == 'success' && needs.review-1.outputs.needs_fix == 'true'
+    uses: ./.github/workflows/claude-fix-iteration.yml
+    with:
+      iteration: "1"
+      pr_number: ${{ needs.resolve-pr.outputs.pr_number }}
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Stage 5: Review iteration 2 ───────────────────────────────────────
+  review-2:
+    needs: [resolve-pr, fix-1]
+    if: always() && needs.fix-1.result == 'success'
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "2"
+      pr_number: ${{ needs.resolve-pr.outputs.pr_number }}
+      is_final: false
+      has_prior_reviews: true
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Stage 6: Fix iteration 2 ──────────────────────────────────────────
+  fix-2:
+    needs: [resolve-pr, review-2]
+    if: always() && needs.review-2.result == 'success' && needs.review-2.outputs.needs_fix == 'true'
+    uses: ./.github/workflows/claude-fix-iteration.yml
+    with:
+      iteration: "2"
+      pr_number: ${{ needs.resolve-pr.outputs.pr_number }}
+      repo: ${{ github.repository }}
+      include_failure_context: true
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Stage 7: Review iteration 3 (final) ───────────────────────────────
+  review-3:
+    needs: [resolve-pr, fix-2]
+    if: always() && needs.fix-2.result == 'success'
+    uses: ./.github/workflows/claude-review-iteration.yml
+    with:
+      iteration: "3"
+      pr_number: ${{ needs.resolve-pr.outputs.pr_number }}
+      is_final: true
+      has_prior_reviews: true
+      repo: ${{ github.repository }}
+      runner: ${{ inputs.runner }}
+    secrets: inherit
+
+  # ─── Final: Set outcome labels ──────────────────────────────────────────
+  final-status:
+    needs: [implement, resolve-pr, review-1, fix-1, review-2, fix-2, review-3]
+    if: always() && needs.resolve-pr.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set outcome labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CANCELLED="false"
+          FAILED="false"
+          for result in \
+            "${{ needs.implement.result }}" \
+            "${{ needs.resolve-pr.result }}" \
+            "${{ needs.review-1.result }}" \
+            "${{ needs.fix-1.result }}" \
+            "${{ needs.review-2.result }}" \
+            "${{ needs.fix-2.result }}" \
+            "${{ needs.review-3.result }}"; do
+            case "$result" in
+              cancelled) CANCELLED="true" ;;
+              failure) FAILED="true" ;;
+            esac
+          done
+
+          if [ "$CANCELLED" = "true" ]; then
+            LABEL="⚠️ claude-cancelled"
+          elif [ "$FAILED" = "true" ]; then
+            LABEL="❌ claude-failed"
+          else
+            LABEL="✅ claude-done"
+          fi
+
+          # Set label on PR (if resolved)
+          PR_NUMBER="${{ needs.resolve-pr.outputs.pr_number }}"
+          if [ -n "$PR_NUMBER" ]; then
+            for l in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+              ENCODED=$(printf '%s' "$l" | jq -sRr @uri)
+              gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+            done
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --method POST -f "labels[]=$LABEL"
+          fi
+
+          # Set label on issue
+          ISSUE_NUMBER="${{ needs.resolve-pr.outputs.issue_number }}"
+          if [ -z "$ISSUE_NUMBER" ] && [ "${{ inputs.event_name }}" = "issues" ]; then
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+          fi
+          if [ -n "$ISSUE_NUMBER" ]; then
+            for l in "🤖 claude-working" "✅ claude-done" "❌ claude-failed" "⚠️ claude-cancelled"; do
+              ENCODED=$(printf '%s' "$l" | jq -sRr @uri)
+              gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/labels/${ENCODED}" --method DELETE 2>/dev/null || true
+            done
+            gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/labels" --method POST -f "labels[]=$LABEL"
+          fi

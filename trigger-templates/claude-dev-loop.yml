@@ -1,0 +1,31 @@
+name: Claude Dev Loop
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to run review-fix loop on"
+        required: true
+        type: string
+
+concurrency:
+  group: review-fix-loop-${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  run:
+    uses: etrubenok/claude-workflows/.github/workflows/claude-dev-loop.yml@v1
+    with:
+      event_name: ${{ github.event_name }}
+      # runner: '["self-hosted", "linux", "claude-agent"]'  # uncomment to override default
+    secrets: inherit

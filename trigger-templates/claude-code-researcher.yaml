@@ -1,0 +1,25 @@
+name: Claude Code Research Agent
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: claude-research-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  run:
+    uses: etrubenok/claude-workflows/.github/workflows/claude-code-researcher.yaml@v1
+    with:
+      event_name: ${{ github.event_name }}
+      # runner: '["self-hosted", "linux", "claude-agent"]'  # uncomment to override default
+    secrets: inherit
