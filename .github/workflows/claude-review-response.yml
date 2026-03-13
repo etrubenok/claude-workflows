@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       code_changed: ${{ steps.check-changes.outputs.code_changed }}
+      needs_review_fix: ${{ steps.check-review-fix.outputs.needs_review_fix }}
       pr_number: ${{ steps.resolve-pr.outputs.pr_number }}
 
     steps:
@@ -93,10 +94,26 @@ jobs:
             echo "No code changes — skipping review-fix loop"
           fi
 
-  # ─── Review-Fix Loop (only if code was changed) ───────────────────────
+      - name: Check if review needs fixes
+        id: check-review-fix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.resolve-pr.outputs.pr_number }}"
+          LATEST_BOT_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" or .user.type == "Bot")] | last | .body // ""')
+          if echo "$LATEST_BOT_COMMENT" | grep -qE '#### (CRITICAL|HIGH|MEDIUM)'; then
+            echo "needs_review_fix=true" >> "$GITHUB_OUTPUT"
+            echo "Review contains findings that need fixes"
+          else
+            echo "needs_review_fix=false" >> "$GITHUB_OUTPUT"
+            echo "No actionable findings in review"
+          fi
+
+  # ─── Review-Fix Loop ──────────────────────────────────────────────────
   review-1:
     needs: [respond]
-    if: always() && needs.respond.result == 'success' && needs.respond.outputs.code_changed == 'true'
+    if: always() && needs.respond.result == 'success' && (needs.respond.outputs.code_changed == 'true' || needs.respond.outputs.needs_review_fix == 'true')
     uses: ./.github/workflows/claude-review-iteration.yml
     with:
       iteration: "1"
