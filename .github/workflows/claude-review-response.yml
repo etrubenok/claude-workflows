@@ -102,12 +102,12 @@ jobs:
           PR_NUMBER="${{ steps.resolve-pr.outputs.pr_number }}"
           LATEST_BOT_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --jq '[.[] | select(.user.login == "github-actions[bot]" or .user.type == "Bot")] | last | .body // ""')
-          if echo "$LATEST_BOT_COMMENT" | grep -qE '#### (CRITICAL|HIGH|MEDIUM)'; then
+          if echo "$LATEST_BOT_COMMENT" | tail -5 | grep -q '@fix'; then
             echo "needs_review_fix=true" >> "$GITHUB_OUTPUT"
-            echo "Review contains findings that need fixes"
+            echo "Review ends with @fix — needs fixes"
           else
             echo "needs_review_fix=false" >> "$GITHUB_OUTPUT"
-            echo "No actionable findings in review"
+            echo "No @fix in review — no fixes needed"
           fi
 
   # ─── Review-Fix Loop ──────────────────────────────────────────────────
