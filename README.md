@@ -4,6 +4,16 @@ Reusable GitHub Actions workflows for Claude-powered automation: ad-hoc agent, r
 
 Project-specific behavior is driven by each consuming repo's `CLAUDE.md`.
 
+## How It Works
+
+This repo uses GitHub Actions' [reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows). Consuming repos only need thin **trigger files** — small workflow files that define *when* to run (on labels, comments, etc.). Each trigger file calls the full workflow implementation in this repo via a cross-repository `uses:` reference:
+
+```yaml
+uses: etrubenok/claude-workflows/.github/workflows/claude-dev-loop.yml@v1
+```
+
+The shared workflow code stays in `claude-workflows` and is fetched by GitHub at runtime. This means consuming repos get updates automatically when the `v1` tag is moved, without needing to copy or update any workflow logic.
+
 ## Setup in a New Repo
 
 ### 1. Required Secrets
@@ -31,7 +41,7 @@ Create these labels in your repo (Issues > Labels > New label):
 
 ### 3. Copy Trigger Files
 
-Copy the 6 trigger files from `trigger-templates/` into your repo's `.github/workflows/` directory:
+Copy the 6 trigger files from this repo's `trigger-templates/` into your repo's `.github/workflows/` directory. These are thin wrappers — the full workflow logic is fetched from `claude-workflows` at runtime (see [How It Works](#how-it-works)):
 
 ```bash
 mkdir -p .github/workflows
