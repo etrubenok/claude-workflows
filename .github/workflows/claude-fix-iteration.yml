@@ -31,6 +31,13 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 60
     steps:
+      - name: Validate PAT_WORKFLOWS
+        run: |
+          if [ -z "${{ secrets.PAT_WORKFLOWS }}" ]; then
+            echo "::error::PAT_WORKFLOWS secret is required but not configured. See README setup instructions."
+            exit 1
+          fi
+
       - name: Get PR branch
         id: pr-branch
         env:
@@ -44,14 +51,14 @@ jobs:
         with:
           ref: ${{ steps.pr-branch.outputs.branch }}
           fetch-depth: 0
-          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_WORKFLOWS }}
 
       - name: Run Claude Code Fix
         uses: anthropics/claude-code-action@v1
         with:
           show_full_output: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS }}
           claude_args: "--max-turns 80 --dangerously-skip-permissions"
           prompt: |
             You are fixing code review feedback on PR #${{ inputs.pr_number }}.

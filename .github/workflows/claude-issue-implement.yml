@@ -32,11 +32,18 @@ jobs:
     outputs:
       pr_number: ${{ steps.find-pr.outputs.pr_number }}
     steps:
+      - name: Validate PAT_WORKFLOWS
+        run: |
+          if [ -z "${{ secrets.PAT_WORKFLOWS }}" ]; then
+            echo "::error::PAT_WORKFLOWS secret is required but not configured. See README setup instructions."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_WORKFLOWS }}
 
       - name: Set working label on issue
         env:
@@ -63,7 +70,7 @@ jobs:
           show_full_output: true
           branch_prefix: "feature/"
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS }}
           claude_args: "--max-turns 80 --dangerously-skip-permissions"
           prompt: |
             You are implementing code from a GitHub issue based on a user's comment.
