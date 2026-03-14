@@ -41,13 +41,14 @@ Create these labels in your repo (Issues > Labels > New label):
 
 ### 3. Copy Trigger Files
 
-Copy the 6 trigger files from this repo's `trigger-templates/` into your repo's `.github/workflows/` directory. These are thin wrappers — the full workflow logic is fetched from `claude-workflows` at runtime (see [How It Works](#how-it-works)):
+Copy the 7 trigger files from this repo's `trigger-templates/` into your repo's `.github/workflows/` directory. These are thin wrappers — the full workflow logic is fetched from `claude-workflows` at runtime (see [How It Works](#how-it-works)):
 
 ```bash
 mkdir -p .github/workflows
 cp trigger-templates/claude-dev-loop.yml .github/workflows/
 cp trigger-templates/claude-issue-implement.yml .github/workflows/
 cp trigger-templates/claude-review-response.yml .github/workflows/
+cp trigger-templates/claude-review-loop.yml .github/workflows/
 cp trigger-templates/claude.yml .github/workflows/
 cp trigger-templates/claude-code-researcher.yaml .github/workflows/
 cp trigger-templates/claude-dropped-run-notify.yml .github/workflows/
@@ -86,11 +87,12 @@ See [`examples/CLAUDE.md`](examples/CLAUDE.md) for a template with guided instru
 | `claude-dev-loop.yml` | `claude-dev-loop.yml` | `ready-for-implementation` label, `review-fix` label, `workflow_dispatch` | Full implement + 3-round review-fix loop |
 | `claude-issue-implement.yml` | `claude-issue-implement.yml` | `@implement` in issue comment | Implement from comment, then review-fix loop |
 | `claude-review-response.yml` | `claude-review-response.yml` | `@fix` in PR comment | Fix PR feedback, then review-fix loop |
+| `claude-review-loop.yml` | `claude-review-loop.yml` | `@review` in PR comment | 3-round review-fix loop from scratch (no initial fix) |
 | `claude-dropped-run-notify.yml` | `claude-dropped-run-notify.yml` | `workflow_run` completed (cancelled) | Notifies when a run was cancelled by concurrency |
 
 Internal (not exposed as trigger files):
-- `claude-review-iteration.yml` — called by dev-loop, issue-implement, and review-response
-- `claude-fix-iteration.yml` — called by dev-loop, issue-implement, and review-response
+- `claude-review-iteration.yml` — called by dev-loop, issue-implement, review-response, and review-loop
+- `claude-fix-iteration.yml` — called by dev-loop, issue-implement, review-response, and review-loop
 
 ## Versioning
 
