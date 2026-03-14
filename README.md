@@ -13,7 +13,7 @@ Add these repository secrets (Settings > Secrets and variables > Actions):
 | Secret | Required | Purpose |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Yes | Claude Code OAuth token for the claude-code-action |
-| `PAT_WORKFLOWS` | No | PAT with `contents:write` + `pull-requests:write` for cross-repo push; falls back to `GITHUB_TOKEN` |
+| `PAT_WORKFLOWS` | Yes | PAT with `contents:write`, `pull-requests:write`, and `workflows:write` scopes — required for pushing code and triggering downstream workflows |
 
 ### 2. Required Labels
 
@@ -64,6 +64,8 @@ Defaults:
 ### 5. Add a CLAUDE.md
 
 Create a `CLAUDE.md` in your repo root. This is what drives project-specific behavior — coding standards, testing procedures, environment details, etc.
+
+See [`examples/CLAUDE.md`](examples/CLAUDE.md) for a template with guided instructions.
 
 ## Workflow Overview
 

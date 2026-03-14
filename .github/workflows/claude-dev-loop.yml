@@ -26,11 +26,18 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 90
     steps:
+      - name: Validate PAT_WORKFLOWS
+        run: |
+          if [ -z "${{ secrets.PAT_WORKFLOWS }}" ]; then
+            echo "::error::PAT_WORKFLOWS secret is required but not configured. See README setup instructions."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_WORKFLOWS }}
 
       - name: Set working label on issue
         env:
@@ -48,7 +55,7 @@ jobs:
           show_full_output: true
           branch_prefix: "feature/"
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT_WORKFLOWS }}
           claude_args: "--max-turns 80 --dangerously-skip-permissions"
           prompt: |
             You are implementing a feature from a GitHub issue. Read CLAUDE.md to see how to access GitHub and environments.

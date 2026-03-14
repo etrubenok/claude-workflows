@@ -42,6 +42,13 @@ jobs:
             echo "pr_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Validate PAT_WORKFLOWS
+        run: |
+          if [ -z "${{ secrets.PAT_WORKFLOWS }}" ]; then
+            echo "::error::PAT_WORKFLOWS secret is required but not configured. See README setup instructions."
+            exit 1
+          fi
+
       - name: Set working label on PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_WORKFLOWS }}
 
       - name: Record SHA before
         id: sha-before
@@ -77,8 +84,15 @@ jobs:
           mode: "agent"
           show_full_output: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
-          claude_args: "--max-turns 80 --dangerously-skip-permissions"
+          github_token: ${{ secrets.PAT_WORKFLOWS }}
+          claude_args: >-
+            --max-turns 80
+            --dangerously-skip-permissions
+            --append-system-prompt "REVIEW-FIX LOOP: If you perform a code review and find issues
+            of MEDIUM severity or above that require code changes, but you do not make the changes
+            yourself, you MUST end your response with @fix on its own line. This triggers the
+            automated review-fix loop. If you make all necessary fixes yourself or find no
+            actionable issues, do NOT include @fix."
 
       - name: Check if code changed
         id: check-changes
