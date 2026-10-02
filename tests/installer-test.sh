@@ -58,8 +58,8 @@ check "install: the prompts are copied" "$(ls "$SHARE/prompts/stages" | paste -s
   "close.md implement.md review.md verify.md header"
 check "install: VERSION names the installed commit" "$(head -n 1 "$SHARE/VERSION")" "$(git -C "$SRC" describe --always --dirty --tags)"
 check "install: the four units and worker 1's calendar" \
-  "$(cd "$UNITS" && ls factory-demo-* -d | paste -sd ' ' -) $([ -r "$UNITS/factory-demo-fast@1.timer.d/every-2-min.conf" ] && echo cal)" \
-  "factory-demo-fast@1.timer.d factory-demo-fast@.service factory-demo-fast@.timer factory-demo-slow@.service factory-demo-slow@.timer cal"
+  "$(cd "$UNITS" && ls -d factory-demo-* | LC_ALL=C sort | paste -sd ' ' -) $([ -r "$UNITS/factory-demo-fast@1.timer.d/every-2-min.conf" ] && echo cal)" \
+  "factory-demo-fast@.service factory-demo-fast@.timer factory-demo-fast@1.timer.d factory-demo-slow@.service factory-demo-slow@.timer cal"
 check "install: no placeholder left in a unit" "$(cat "$UNITS"/factory-demo-* "$UNITS"/factory-demo-fast@1.timer.d/* 2> /dev/null | grep -c '@[A-Z]*@')" 0
 check "install: the fast unit runs the installed driver for the checkout, with the env file" \
   "$(grep -c "^ExecStart=$SHARE/scripts/factory-tick.sh --lane fast --worker %i$" "$UNITS/factory-demo-fast@.service") $(grep -c "^Environment=FACTORY_CHECKOUT=$CO$" "$UNITS/factory-demo-fast@.service") $(grep -c '^EnvironmentFile=-%h/.config/factory/demo.env$' "$UNITS/factory-demo-fast@.service")" "1 1 1"
@@ -68,7 +68,7 @@ check "install: the env file, private" "$(stat -c %a "$ENVF" 2> /dev/null)" 600
 check "install: one fast and one slow worker enabled, worker 1's calendar armed" \
   "$(grep -c '^--user enable --now factory-demo-fast@1.timer$' "$S/systemctl") $(grep -c '^--user enable --now factory-demo-slow@1.timer$' "$S/systemctl") $(grep -c 'enable --now factory-demo-[a-z]*@[2-9]' "$S/systemctl") $(grep -c '^--user restart factory-demo-fast@1.timer$' "$S/systemctl")" "1 1 0 1"
 check "install: the default budget writes no drop-in" "$([ -e "$UNITS/factory-demo-fast@.service.d/budget.conf" ] && echo written || echo none)" none
-created=$(sed -n 's/^label create \([^ ]*\) --repo fake\/repo .*/\1/p' "$S/gh" | sort | paste -sd ' ' -)
+created=$(sed -n 's/^label create \([^ ]*\) --repo fake\/repo .*/\1/p' "$S/gh" | LC_ALL=C sort | paste -sd ' ' -)
 check "install: the factory's labels and the project's" "$created" \
   "area:api hold in-progress in-review needs-decision p1-production p2-product p3-tooling ready review tracking waiting"
 check "install: a label with no color gets the default" "$(grep -c '^label create area:api --repo fake/repo --color C5DEF5 ' "$S/gh")" 1
