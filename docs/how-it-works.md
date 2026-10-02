@@ -21,6 +21,9 @@ session does the stage's work and hands off through GitHub; a crash at any point
 | `waiting` / `needs-decision` | — | parked | — |
 | `hold` / `tracking` | — | never picked | — |
 
+The full rules — who changes each label, every outcome of every stage, how a wait ends and each gate — are in
+[labels-and-gates.md](labels-and-gates.md).
+
 **verify** gives the issue one priority label and its `area:` labels, closes it if it is already done, writes any
 missing design detail as a *Decided* comment, links what it must wait for as GitHub "blocked by" links, and sets
 `in-progress`. **implement** builds the smallest change, runs the project's check, runs one read-only self-review

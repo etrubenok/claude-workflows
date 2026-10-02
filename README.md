@@ -45,6 +45,7 @@ claude setup-token     # then put CLAUDE_CODE_OAUTH_TOKEN=<token> in ~/.config/f
 
 The full walk-through — what to commit, the token, the first issue, how to stop and update — is
 [docs/adopting.md](docs/adopting.md). How the loop works, label by label: [docs/how-it-works.md](docs/how-it-works.md).
+Every label, transition and gate, as a reference: [docs/labels-and-gates.md](docs/labels-and-gates.md).
 
 ## Layout
 
@@ -55,7 +56,7 @@ The full walk-through — what to commit, the token, the first issue, how to sto
 | `systemd/` | the unit templates the installer fills in |
 | `templates/` | what a project commits: `.factory/config`, `.factory/labels`, the review workflows, a `CLAUDE.md` starting point, an allowlist, `.gitignore` lines |
 | `tests/` | scenario tests on scratch state with fakes of `gh`, `claude` and `systemctl` (`bash tests/run.sh`) |
-| `docs/` | adopting, how it works, and the decisions behind the design |
+| `docs/` | adopting, how it works, the labels, transitions and gates, and the decisions behind the design |
 
 ## Status
 
