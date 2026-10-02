@@ -1,0 +1,159 @@
+# Claude PR review — ONE severity-ranked pass per request: the review the factory's `review` stage acts on.
+#
+# Fires only when a review is asked for:
+#   • the PR is opened non-draft (`opened` — a ready PR is a review request), or
+#   • the PR is marked ready for review (`ready_for_review`), or
+#   • the `review` label is added (an explicit re-review after a fix round — the review stage removes and re-adds it).
+# Never on `synchronize` (pushes) and never on comment events.
+#
+# What the factory reads from this file, so keep these shapes: the run list of THIS workflow for the PR's head (a
+# run in progress = the review is pending); the published comment's `fix-before-merge set: N` line (the verdict),
+# or `fix-before-merge set: unknown` (DEGRADED: the loop asks again once); and, for its local self-review before a
+# PR opens, the FIRST `prompt: |` block below (the rubric — its first words must stay "Review this pull request as
+# ONE severity-ranked pass") and the `--model` of the first `claude_args:` line.
+#
+# Risk routing: a docs-only diff skips the review (the `review` label overrides the skip); the factory then merges
+# on green CI alone.
+#
+# Severity: blocking / critical / major are posted inline and must be fixed before merge; medium / minor appear
+# only in the single verdict comment.
+#
+# Auth: a Claude subscription via CLAUDE_CODE_OAUTH_TOKEN — mint it once with `claude setup-token`, then
+# `gh secret set CLAUDE_CODE_OAUTH_TOKEN`. Without the secret every job skips cleanly (green), not fail.
+#
+# A PR that edits THIS file gets no Claude review until it merges (the Action's workflow-validation guard).
+
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, labeled]
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      (github.event.action == 'opened' ||
+       github.event.action == 'ready_for_review' ||
+       (github.event.action == 'labeled' && github.event.label.name == 'review'))
+    runs-on: ubuntu-latest   # or your self-hosted runner's labels
+    # One review per PR; a newer request cancels an in-flight review.
+    concurrency:
+      group: claude-review-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write # post inline review comments
+      issues: read # the inline-comment MCP server reads issue/PR metadata
+      id-token: write
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      # Risk routing. A diff made only of Markdown or docs is skipped — unless the `review` label asked for it.
+      # Widen the pattern to what your project calls low-risk (test-only files, fixtures).
+      - name: Classify diff
+        id: classify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPLICIT: ${{ github.event.action == 'labeled' }}
+        run: |
+          files=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)
+          printf 'changed files:\n%s\n' "$files"
+          reviewable=$(printf '%s\n' "$files" | grep -vE '(\.md$|^docs/)' || true)
+          if [ -z "$reviewable" ] && [ "$EXPLICIT" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "docs-only diff — review skipped (add the 'review' label to force one)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip notice
+        if: steps.classify.outputs.skip == 'true' || env.HAS_TOKEN != 'true'
+        run: echo "Review skipped — docs-only diff, or CLAUDE_CODE_OAUTH_TOKEN not set (run 'claude setup-token' and add the secret)."
+
+      - name: Severity-ranked review
+        if: steps.classify.outputs.skip != 'true' && env.HAS_TOKEN == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review this pull request as ONE severity-ranked pass (the severity list is below). Read
+            CLAUDE.md and what it points to (a specification, the decision log in docs/decisions/ —
+            `grep -rn <term> docs/decisions/`) first, then read the changed files AND their callers with
+            your file tools — the diff alone is not enough. Read the PR body (`gh pr view "$PR_NUMBER"
+            --json body -q .body`) for the issue link, the net-LOC line and the verification evidence.
+            Skip everything the project's mechanical gates already enforce (formatters, linters, type
+            checkers, the CI test suite) — surface only what they cannot see.
+
+            SEVERITY — classify EVERY finding; most severe first:
+            - [blocking]  wrong or silently lost data; a security hole; a crash reachable from outside
+                          input; a violation of a rule CLAUDE.md calls non-negotiable.
+            - [critical]  breaks under a REALISTIC failure (a restart, a timeout, a full disk, a slow
+                          dependency, concurrent use) — describe the concrete sequence that breaks it.
+            - [major]     wrong behaviour a user or a caller can see; unbounded growth or a leak;
+                          unjustified growth or duplication in CODE (lenses 2 and 3; in prose it is
+                          medium).
+            - [medium]    everything else worth fixing that breaks nothing.
+            - [minor]     nits.
+            Post [blocking] / [critical] / [major] as INLINE review comments, each prefixed with
+            its severity and one line of why. Do NOT post medium / minor inline — list them in the
+            verdict only. Do NOT re-raise a finding already dispositioned on this PR: read the
+            existing review threads first and skip resolved ones.
+
+            LENSES:
+            1. CORRECTNESS — against what CLAUDE.md says matters most. Malformed input never crashes
+               the program; errors carry their context. Test adequacy BOUNDED to the changed code:
+               does each new or changed test exercise the FAILURE mode, not just the happy path? An
+               uncovered edge that needs a seam not present in the code is medium, never blocking.
+            2. DUPLICATION / DESIGN UNITY — grep the whole tree (it already contains this PR's
+               changes) for prior art before judging. A second helper, schema or constant that
+               RESTATES code already in the repo is [major]; so is a design decision for an area
+               that a decision already covers without a cited reason for the divergence. A doc or
+               comment that restates or CONTRADICTS another is [medium] — name both sides and which
+               is right — never [major]; ask for a deletion, not a restatement.
+            3. GROWTH — what could be deleted? Is the net LOC stated in the PR body justified by what
+               the PR does? New code that could reuse an existing module, dead code left behind, a
+               guard patched where a root cause should have been fixed: [major] when unjustified;
+               prose growth is medium.
+
+            Then ALWAYS write the verdict — even when the diff is clean — using your file-writing
+            tool to ${{ runner.temp }}/claude-review-verdict.md (markdown): a one-line verdict; the counts by
+            severity (blocking / critical / major / medium / minor); the medium and minor findings
+            as a list (`path:line — one line each`); and an explicit "fix-before-merge set: N" line
+            where N = blocking + critical + major ("fix-before-merge set: 0 — ready to merge" when
+            zero). A following step publishes that file to the PR — do NOT post the summary comment
+            yourself.
+          # The model and the effort are pinned, never the account default (the action has no `model` input).
+          # The factory's self-review reads the model from this line. The allowlist must name every tool the
+          # reviewer needs: Read/Grep/Glob for the tree, Bash for `gh`/`git`, Write for the verdict file, and the
+          # inline-comment MCP server.
+          claude_args: '--model claude-opus-5-5 --effort high --allowedTools "Read,Grep,Glob,Bash,Write,mcp__github_inline_comment__create_inline_comment"'
+
+      # Publish the verdict deterministically so a degraded or quiet review is never silent: the model's file if
+      # present, else a loud fallback. The file is in the runner's per-job temp dir, emptied at every job's start
+      # and end: on a persistent self-hosted runner a fixed /tmp path outlives the job, and a review that wrote
+      # nothing would publish the PREVIOUS PR's verdict.
+      - name: Publish verdict
+        if: always() && steps.classify.outputs.skip != 'true' && env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT_FILE: ${{ runner.temp }}/claude-review-verdict.md
+          COMMENTS_URL: repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments
+        run: |
+          out=$(mktemp)
+          printf '## Review verdict\n\n' > "$out"
+          if [ -s "$VERDICT_FILE" ]; then
+            cat "$VERDICT_FILE" >> "$out"
+          else
+            printf 'The review step finished without writing a verdict — treat as DEGRADED, not an all-clear. Re-request with the `review` label.\n\nfix-before-merge set: unknown\n' >> "$out"
+          fi
+          gh api --method POST "$COMMENTS_URL" -F body=@"$out"
+          echo "Published verdict"

@@ -1,0 +1,52 @@
+# The factory's settings for this repository, read (never run) by the loop from main's copy. One FACTORY_<NAME>=<value>
+# per line; a value already in the host's environment (~/.config/factory/<name>.env) wins over this file.
+# Every line below is optional: the values shown are the defaults.
+
+# Which repository, and the instance name in unit, state and file names on the host.
+# FACTORY_REPO=owner/name                  # default: origin's GitHub slug
+# FACTORY_NAME=name                        # default: the repository's name, lowercased
+
+# The check every change must pass before its PR opens, as the prompts name it to the session.
+FACTORY_CHECK="make check"
+
+# The priority labels, highest first (each in .factory/labels), and the loop-share brake: issues of
+# FACTORY_LOOP_CLASS start only while their share of the last 24 h's sessions is at most FACTORY_LOOP_SHARE_MAX %,
+# or when nothing else can start. An empty class turns the brake off.
+# FACTORY_PRIORITIES="p1-production p2-product p3-tooling"
+# FACTORY_LOOP_CLASS=p3-tooling
+# FACTORY_LOOP_SHARE_MAX=20
+
+# The release check (the close gate) for an issue a `Part of #N` PR leaves open: a command run in the primary
+# checkout as `<command> <merge sha> <issue>` that prints green | failed | none | pending. Empty: merged is done.
+# FACTORY_RELEASE_CHECK=scripts/release-check.sh
+# FACTORY_RELEASE_STALL=7200               # s still pending after the merge before the issue is parked
+
+# One extra working folder for the sessions (a scratch data folder for tests), and folders it must never be,
+# lie under or hold. The factory's own install and state folders are always protected.
+# FACTORY_SANDBOX=/srv/scratch/myproject
+# FACTORY_PROTECTED="/srv/data/myproject"
+
+# What a session may leave behind outside its worktree, cleaned up after implement and review: a command run in
+# the primary checkout as `<command> <issue>`.
+# FACTORY_REAP="scripts/stop-test-server.sh"
+
+# The review workflow's file in .github/workflows/, and the local self-review before a PR opens: an extended regex
+# over the changed paths (default: every path), or FACTORY_SELF_REVIEW=0 to turn it off.
+# FACTORY_REVIEW_WORKFLOW=claude-review.yml
+# FACTORY_SELF_REVIEW_PATHS='^(src|lib)/'
+# FACTORY_SELF_REVIEW=1
+
+# Sessions: the model, and each stage's effort and turn cap.
+# FACTORY_MODEL=claude-opus-5-5[1m]
+# FACTORY_EFFORT_IMPLEMENT=high
+# FACTORY_EFFORT_REVIEW=high
+# FACTORY_EFFORT_VERIFY=medium
+# FACTORY_EFFORT_CLOSE=medium
+# FACTORY_TURNS_IMPLEMENT=120
+# FACTORY_TURNS_REVIEW=80
+# FACTORY_TURNS_VERIFY=30
+# FACTORY_TURNS_CLOSE=30
+
+# The two issues the loop keeps for itself.
+# FACTORY_BOARD_TITLE="Factory board"
+# FACTORY_MONITOR_TITLE="Factory monitor"

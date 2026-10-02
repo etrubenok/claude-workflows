@@ -1,0 +1,10 @@
+[Unit]
+Description=Claude factory @NAME@: slow lane, worker %i, every 15 min (worker k starts (k-1) min late)
+
+[Timer]
+OnCalendar=*-*-* *:05,20,35,50:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

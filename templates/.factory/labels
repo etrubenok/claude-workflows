@@ -1,0 +1,16 @@
+# The project's labels: name|color|description. The installer creates each one (a missing color gets the default);
+# the board says each in plain words — its description up to the first colon — so write that part for a reader.
+# Description: at most 100 characters (GitHub's limit).
+#
+# The priority labels, highest first, as FACTORY_PRIORITIES names them. The verify stage gives every issue one.
+p1-production|B60205|something wrong in production: the service is down, wrong or losing data
+p2-product|FBCA04|the product work: what the project is for, features and fixes users see
+p3-tooling|C2E0C6|the tooling: CI, the build, developer tools and the factory's own settings
+#
+# The areas: parts of the code whose changes would collide at merge. Two issues sharing one are never in flight
+# at once, so make them coarse enough that most issues have one, fine enough that unrelated work runs side by side.
+area:api||the HTTP API: src/api/**
+area:core||the core library: src/core/**
+area:ui||the user interface: web/**
+area:ci||the build and test system: .github/**, the Makefile
+area:docs||the written documentation: docs/** and README.md

@@ -1,99 +1,65 @@
-# Claude Workflows
+# Claude factory
 
-Reusable GitHub Actions workflows for Claude-powered automation: ad-hoc agent, researcher, dev loop (implement + review-fix), issue implement, PR feedback response, and dropped-run notifications.
+An autonomous issue loop for a GitHub repository, run by [Claude Code](https://claude.com/claude-code) on your
+own Linux host. Open an issue; the loop checks it, builds it on its own branch, opens a pull request, gets it
+reviewed, fixes what the review found, merges it on green CI and closes the issue — one fresh, headless Claude
+session per step, each handing off through what GitHub already holds (a label, a comment, a pull request). It
+asks you only for what you reserved for yourself, by a comment on the issue you answer by replying.
 
-Project-specific behavior is driven by each consuming repo's `CLAUDE.md`.
-
-## How It Works
-
-This repo uses GitHub Actions' [reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows). Consuming repos only need thin **trigger files** — small workflow files that define *when* to run (on labels, comments, etc.). Each trigger file calls the full workflow implementation in this repo via a cross-repository `uses:` reference:
-
-```yaml
-uses: etrubenok/claude-workflows/.github/workflows/claude-dev-loop.yml@v1
+```
+issue ──verify──▶ in-progress ──implement──▶ in-review ──review──▶ merged ──close──▶ closed
+          │                          ▲                                 │
+          └── waiting / needs-decision (parked; the hourly sweep or your reply resumes it)
+                                     └──────── a new round when the merged work is not the whole issue
 ```
 
-The shared workflow code stays in `claude-workflows` and is fetched by GitHub at runtime. This means consuming repos get updates automatically when the `v1` tag is moved, without needing to copy or update any workflow logic.
+## What you get
 
-## Setup in a New Repo
+- **A driver** (`scripts/factory-tick.sh`) that systemd timers run every few minutes: a *fast lane* that checks
+  new issues, reviews and closes, and a *slow lane* that builds — each with its own workers and locks, at most N
+  issues in flight, never two touching the same part of the code (`area:` labels), "blocked by" links honoured.
+- **Five prompts** (`prompts/`): a shared header and one text per stage. Your project adds its own rules in its
+  `CLAUDE.md` and, per stage, in `.factory/prompts/`.
+- **An hourly sweep** that re-checks parked issues, retries what failed transiently, picks up your replies, tidies
+  finished worktrees and reports on a monitor issue; **a live board** — one pinned issue that always shows what
+  is in flight, what comes next and what waits on you; and a daily digest of everything it decided by itself.
+- **A review workflow** for your repository (`templates/.github/workflows/claude-review.yml`): one
+  severity-ranked pass per pull request, whose `fix-before-merge set: N` line the loop acts on, and a local
+  self-review the build step runs with the same rubric before a PR opens.
+- **Brakes:** a cap on the share of sessions spent on the loop's own tooling (that never idles a free slot), a
+  pause on the account's usage limit, on an expired login and on a run of sessions that die at once, per-stage
+  turn caps and effort levels, a load gate for extra workers.
 
-### 1. Required Secrets
+## Quick start
 
-Add these repository secrets (Settings > Secrets and variables > Actions):
-
-| Secret | Required | Purpose |
-|---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Yes | Claude Code OAuth token for the claude-code-action |
-| `PAT_WORKFLOWS` | Yes | PAT with `contents:write`, `pull-requests:write`, and `workflows:write` scopes — required for pushing code and triggering downstream workflows |
-
-### 2. Required Labels
-
-Create these labels in your repo (Issues > Labels > New label):
-
-| Label | Purpose |
-|---|---|
-| `ready-for-implementation` | Trigger for dev-loop (issue path) |
-| `research` | Trigger for researcher agent |
-| `review-fix` | Trigger for dev-loop (PR path) |
-| `🤖 claude-working` | Set while Claude is running |
-| `✅ claude-done` | Set on successful completion |
-| `❌ claude-failed` | Set on failure |
-| `⚠️ claude-cancelled` | Set on cancellation |
-
-### 3. Copy Trigger Files
-
-Copy the 7 trigger files from this repo's `trigger-templates/` into your repo's `.github/workflows/` directory. These are thin wrappers — the full workflow logic is fetched from `claude-workflows` at runtime (see [How It Works](#how-it-works)):
+You need a Linux host with systemd (user units, lingering on), `git`, `gh` (logged in as you), `jq`, `flock` and
+`claude` on the PATH. Then, for a repository `you/app`:
 
 ```bash
-mkdir -p .github/workflows
-cp trigger-templates/claude-dev-loop.yml .github/workflows/
-cp trigger-templates/claude-issue-implement.yml .github/workflows/
-cp trigger-templates/claude-review-response.yml .github/workflows/
-cp trigger-templates/claude-review-loop.yml .github/workflows/
-cp trigger-templates/claude.yml .github/workflows/
-cp trigger-templates/claude-code-researcher.yaml .github/workflows/
-cp trigger-templates/claude-dropped-run-notify.yml .github/workflows/
+git clone git@github.com:etrubenok/claude-workflows.git ~/factory-src
+git clone git@github.com:you/app.git ~/factory/app        # the loop's own clone, on main; not your working copy
+# In you/app, commit .factory/config, .factory/labels, the review workflow and a CLAUDE.md (see docs/adopting.md)
+bash ~/factory-src/scripts/factory-install.sh ~/factory/app
+claude setup-token     # then put CLAUDE_CODE_OAUTH_TOKEN=<token> in ~/.config/factory/app.env
 ```
 
-### 4. Customize Runner (Optional)
+The full walk-through — what to commit, the token, the first issue, how to stop and update — is
+[docs/adopting.md](docs/adopting.md). How the loop works, label by label: [docs/how-it-works.md](docs/how-it-works.md).
 
-Each trigger file has a commented-out `runner` input. Uncomment and set it to match your infrastructure:
+## Layout
 
-```yaml
-jobs:
-  run:
-    uses: etrubenok/claude-workflows/.github/workflows/claude-dev-loop.yml@v1
-    with:
-      event_name: ${{ github.event_name }}
-      runner: '["self-hosted", "linux", "claude-agent"]'  # your custom runner labels
-    secrets: inherit
-```
+| Path | What |
+|---|---|
+| `scripts/` | the driver, its stage runner, sweep and board, the installer and the helpers sessions call |
+| `prompts/` | the header and the four stage texts every session is sent |
+| `systemd/` | the unit templates the installer fills in |
+| `templates/` | what a project commits: `.factory/config`, `.factory/labels`, the review workflows, a `CLAUDE.md` starting point, an allowlist, `.gitignore` lines |
+| `tests/` | scenario tests on scratch state with fakes of `gh`, `claude` and `systemctl` (`bash tests/run.sh`) |
+| `docs/` | adopting, how it works, and the decisions behind the design |
 
-Defaults:
-- `claude.yml`: `["ubuntu-latest"]` (lightweight, no self-hosted needed)
-- All others: `["self-hosted", "linux", "claude-agent"]`
+## Status
 
-### 5. Add a CLAUDE.md
-
-Create a `CLAUDE.md` in your repo root. This is what drives project-specific behavior — coding standards, testing procedures, environment details, etc.
-
-See [`examples/CLAUDE.md`](examples/CLAUDE.md) for a template with guided instructions.
-
-## Workflow Overview
-
-| Trigger File | Shared Workflow | Events | What It Does |
-|---|---|---|---|
-| `claude.yml` | `claude.yml` | `@claude` in issue/PR comments | Ad-hoc Claude agent (read-only, answers questions) |
-| `claude-code-researcher.yaml` | `claude-code-researcher.yaml` | `research` label or `@research` comment | Deep research agent, posts findings as issue comment |
-| `claude-dev-loop.yml` | `claude-dev-loop.yml` | `ready-for-implementation` label, `review-fix` label, `workflow_dispatch` | Full implement + 3-round review-fix loop |
-| `claude-issue-implement.yml` | `claude-issue-implement.yml` | `@implement` in issue comment | Implement from comment, then review-fix loop |
-| `claude-review-response.yml` | `claude-review-response.yml` | `@fix` in PR comment | Fix PR feedback, then review-fix loop |
-| `claude-review-loop.yml` | `claude-review-loop.yml` | `@review` in PR comment | 3-round review-fix loop from scratch (no initial fix) |
-| `claude-dropped-run-notify.yml` | `claude-dropped-run-notify.yml` | `workflow_run` completed (cancelled) | Notifies when a run was cancelled by concurrency |
-
-Internal (not exposed as trigger files):
-- `claude-review-iteration.yml` — called by dev-loop, issue-implement, review-response, and review-loop
-- `claude-fix-iteration.yml` — called by dev-loop, issue-implement, review-response, and review-loop
-
-## Versioning
-
-Consuming repos pin to `@v1`. The `v1` tag should be updated when pushing non-breaking changes. For breaking changes, create `v2`.
+Extracted on 2026-10-02 from the private project it was built for, where it ran for three weeks and merged about
+two hundred pull requests; the history of that project is not part of this repository. It has not yet driven a second
+project — expect rough edges in what a new project has to provide (see "Known limits" in docs/adopting.md). The
+reusable GitHub Actions workflows this repository held before are in its history and under the `v1` tag.
