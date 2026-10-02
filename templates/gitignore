@@ -1,0 +1,7 @@
+# Lines for the project's .gitignore: what the factory's sessions leave in a worktree and must never commit.
+/.claude/worktrees/
+/.pr-body-*.md
+/self-review-verdict.md*
+/self-review.diff
+/self-review.log
+/self-review.pid

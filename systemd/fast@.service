@@ -1,0 +1,14 @@
+[Unit]
+Description=Claude factory @NAME@: fast lane, worker %i — checks, reviews, closes and the pick step
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=FACTORY_CHECKOUT=@CHECKOUT@
+Environment=FACTORY_SESSION_TIMEOUT=7200
+# A stage session needs none of the owner's interactive notes.
+Environment=CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+# The loop's own long-lived login: `claude setup-token`, then CLAUDE_CODE_OAUTH_TOKEN=<token> in this file (the
+# installer creates it, mode 600). Any FACTORY_* setting here overrides the project's .factory/config on this host.
+EnvironmentFile=-%h/.config/factory/@NAME@.env
+ExecStart=@SHARE@/scripts/factory-tick.sh --lane fast --worker %i
