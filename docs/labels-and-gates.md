@@ -202,6 +202,12 @@ A session that dies between its two label calls is the usual cause of a breach. 
 Found in the review of pull request #4 on 2026-10-02. Each is what the code does today; delete a line when it is
 fixed.
 
+- **Nobody's identity is checked.** Any comment that is not a bot's and lacks the loop's mark counts as the owner's
+  reply (`read_reply`), and every open issue is queued whoever opened it. On a public repository a stranger can
+  answer a *Decision needed* or have an issue built.
+- **A GitHub read that fails reads as a state.** No pull request found reads as implement, no labels as verify
+  (`read_stage`); an issue whose state did not load reads as closed, and its folder and branch are removed
+  (`advance`); label events that did not load resume a wait as `in-review` (`resume_label`).
 - **`hold` on an issue in flight does nothing**, and a wait that ends on a held issue with an open or merged pull
   request puts its stage label back, so the work carries on while the loop's comment says it stays out of the queue
   (`unpark` in `scripts/factory-sweep.sh`).
